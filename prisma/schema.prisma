@@ -1,0 +1,470 @@
+// Rajasthan Agri-Intelligence & Market Linkage Platform — Prisma schema
+// Grows module-by-module. This file currently covers M01 (Foundation: users/roles),
+// M02 (Farmer & Plot Registry) and M04 (FPO Workbench).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────
+// M01 — Foundation: users, roles, sessions
+// ─────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  phone        String   @unique
+  passwordHash String
+  role         String // FARMER | FPO_STAFF | FPO_ADMIN | BUYER | GOVERNMENT | ADMIN
+  status       String   @default("ACTIVE") // ACTIVE | INACTIVE
+  createdAt    DateTime @default(now())
+
+  farmer Farmer?
+  fpo    FPO?    @relation(fields: [fpoId], references: [id])
+  fpoId  String?
+  buyer  Buyer?
+
+  notifications           Notification[]
+  notificationPreference  NotificationPreference?
+}
+
+// ─────────────────────────────────────────────────────────────
+// M02 — Farmer & Plot Registry (FR-M1)
+// ─────────────────────────────────────────────────────────────
+
+model Farmer {
+  id                 String   @id @default(cuid())
+  userId             String?  @unique
+  user               User?    @relation(fields: [userId], references: [id])
+  platformId         String   @unique
+  name               String
+  mobileNumber       String
+  gender             String?
+  landholdingCategory String? // marginal | small | semi-medium | medium | large
+  villageName        String
+  tehsil             String
+  district           String
+  createdAt          DateTime @default(now())
+
+  plots       Plot[]
+  memberships Membership[]
+  dataSubjectRequests DataSubjectRequest[]
+}
+
+model Plot {
+  id                          String  @id @default(cuid())
+  farmerId                    String
+  farmer                      Farmer  @relation(fields: [farmerId], references: [id])
+  plotCode                    String  @unique
+  villageName                 String
+  areaSqm                     Int
+  belowRemoteSensingThreshold Boolean @default(false)
+  boundaryGeoJson             String // GeoJSON polygon, stored as text (SQLite has no native geometry type)
+  centerLat                   Float
+  centerLng                   Float
+  irrigationSource            String? // canal | tubewell | open_well | farm_pond | rainfed
+  soilTypeDeclared            String?
+  createdAt                   DateTime @default(now())
+
+  cropCycles CropCycle[]
+  lotComponents LotComponent[]
+}
+
+model Crop {
+  id                  String @id @default(cuid())
+  name                String @unique
+  code                String @unique
+  indicativeYieldKgHa Int? // reference yield used for the naive expected-output estimate in M04; not a model prediction
+
+  varieties  Variety[]
+  cropCycles CropCycle[]
+  priceObservations PriceObservation[]
+  lots       Lot[]
+  contracts  Contract[]
+}
+
+model Variety {
+  id       String  @id @default(cuid())
+  cropId   String
+  crop     Crop    @relation(fields: [cropId], references: [id])
+  name     String
+  durationDays Int?
+
+  cropCycles CropCycle[]
+}
+
+model CropCycle {
+  id             String    @id @default(cuid())
+  plotId         String
+  plot           Plot      @relation(fields: [plotId], references: [id])
+  cropId         String
+  crop           Crop      @relation(fields: [cropId], references: [id])
+  varietyId      String?
+  variety        Variety?  @relation(fields: [varietyId], references: [id])
+  season         String // Kharif | Rabi | Zaid
+  seasonYearLabel String // e.g. "2026-27"
+  sowingDate     DateTime?
+  status         String    @default("planned") // planned | sown | harvested | abandoned
+  actualYieldKg  Float?
+  createdAt      DateTime  @default(now())
+
+  advisories Advisory[]
+}
+
+// ─────────────────────────────────────────────────────────────
+// M02/M03 — Predictive Advisory (FR-M2, FR-M3), rule-based
+// ─────────────────────────────────────────────────────────────
+
+// Every advisory carries a model ID/version and generation timestamp (the
+// FRS's "no prediction without stamping" rule), even though "model" here means
+// a static rule function, not a trained model — MD-02/MD-04/MD-07 style ML is
+// out of scope for this tier. See docs comment in src/lib/advisoryRules.ts.
+model Advisory {
+  id             String    @id @default(cuid())
+  cropCycleId    String
+  cropCycle      CropCycle @relation(fields: [cropCycleId], references: [id])
+  adviceType     String // sowing_window | irrigation | sell_hold | pest_risk
+  message        String // farmer-facing, at most two sentences
+  reason         String
+  actionDateStart DateTime
+  actionDateEnd   DateTime?
+  modelId        String // e.g. "RULE-SOWING-V1"
+  generatedAt    DateTime  @default(now())
+  acknowledged   Boolean   @default(false)
+  acknowledgedAt DateTime?
+}
+
+// ─────────────────────────────────────────────────────────────
+// M04 — FPO Workbench (FR-M4)
+// ─────────────────────────────────────────────────────────────
+
+model FPO {
+  id                 String @id @default(cuid())
+  legalName          String
+  registrationNumber String @unique
+  district           String
+
+  users       User[]
+  memberships Membership[]
+  lots        Lot[]
+  contracts   Contract[]
+}
+
+model Membership {
+  id            String   @id @default(cuid())
+  farmerId      String
+  farmer        Farmer   @relation(fields: [farmerId], references: [id])
+  fpoId         String
+  fpo           FPO      @relation(fields: [fpoId], references: [id])
+  status        String   @default("active") // active | lapsed
+  effectiveDate DateTime @default(now())
+}
+
+// Facility/mandi master and price series — deliberately minimal here (FR-M4-19/20/21).
+// Real multi-year time series and grading/handling cost detail land with M08.
+model MandiMaster {
+  id       String @id @default(cuid())
+  name     String
+  district String
+
+  priceObservations PriceObservation[]
+}
+
+model PriceObservation {
+  id           String      @id @default(cuid())
+  mandiId      String
+  mandi        MandiMaster @relation(fields: [mandiId], references: [id])
+  cropId       String
+  crop         Crop        @relation(fields: [cropId], references: [id])
+  observedDate DateTime
+  minPriceRs   Int // rupees per quintal
+  maxPriceRs   Int
+  modalPriceRs Int
+  mspRs        Int? // minimum support price, where notified for this crop/season
+
+  @@index([cropId, observedDate])
+}
+
+// ─────────────────────────────────────────────────────────────
+// M05 — Buyer Workbench (FR-M5)
+// ─────────────────────────────────────────────────────────────
+
+model Buyer {
+  id                   String @id @default(cuid())
+  userId               String @unique
+  user                 User   @relation(fields: [userId], references: [id])
+  legalName            String
+  category             String // processor | trader | exporter | retailer | institutional
+  commoditiesOfInterest String? // comma-separated crop codes; join table is overkill at this scale
+  operatingDistricts    String? // comma-separated district names
+
+  offers    Offer[]
+  contracts Contract[]
+}
+
+// Graded lot availability declared by an FPO (FR-M5-11/12). Grading events,
+// custody chain and mass-balance tracking land with M07 — this is deliberately
+// just the availability-state record buyers browse against.
+model Lot {
+  id                String   @id @default(cuid())
+  fpoId             String
+  fpo               FPO      @relation(fields: [fpoId], references: [id])
+  cropId            String
+  crop              Crop     @relation(fields: [cropId], references: [id])
+  grade             String? // e.g. FAQ, Grade A — free text at this stage
+  quantityKg        Int
+  availabilityState String // forecast | committed | in_stock
+  readinessDate     DateTime?
+  createdAt         DateTime @default(now())
+
+  offers        Offer[]
+  lotComponents LotComponent[]
+  custodyEvents CustodyEvent[]
+}
+
+// ─────────────────────────────────────────────────────────────
+// M06 — Trade, Contract & Settlement (FR-M6)
+// ─────────────────────────────────────────────────────────────
+
+// A buyer's offer against a lot. FR-M6-01 calls for immutable versioned offers
+// with counter-offer history — implemented here as a linked chain of Offer
+// rows (parentOffer/counterOffers) rather than a single mutable record: each
+// counter creates a new row and marks the previous one "countered" (terminal),
+// so the full negotiation history stays visible. Capped at 3 rounds (FR-M6-01
+// asks for negotiation support; this tier does not attempt unlimited rounds).
+model Offer {
+  id             String   @id @default(cuid())
+  lotId          String
+  lot            Lot      @relation(fields: [lotId], references: [id])
+  buyerId        String
+  buyer          Buyer    @relation(fields: [buyerId], references: [id])
+  quantityKg     Int
+  pricePerKgRs   Float
+  message        String?
+  status         String   @default("pending") // pending | countered | accepted | rejected
+  roundNumber    Int      @default(1) // 1-3; the round this proposal was made in
+  proposedBy     String   @default("buyer") // buyer | fpo — who set this round's terms
+  parentOfferId  String?
+  parentOffer    Offer?   @relation("OfferNegotiation", fields: [parentOfferId], references: [id])
+  counterOffers  Offer[]  @relation("OfferNegotiation")
+  createdAt      DateTime @default(now())
+
+  contract Contract?
+}
+
+// Generated when an offer is accepted. Terms are a point-in-time snapshot from
+// the offer; FR-M6-09 amendment-via-new-version is not implemented — a contract
+// here is immutable once created except for its status and payments.
+model Contract {
+  id           String   @id @default(cuid())
+  offerId      String   @unique
+  offer        Offer    @relation(fields: [offerId], references: [id])
+  fpoId        String
+  fpo          FPO      @relation(fields: [fpoId], references: [id])
+  buyerId      String
+  buyer        Buyer    @relation(fields: [buyerId], references: [id])
+  cropId       String
+  crop         Crop     @relation(fields: [cropId], references: [id])
+  quantityKg   Int
+  pricePerKgRs Float
+  totalValueRs Float
+  status       String   @default("active") // active | completed | disputed
+  createdAt    DateTime @default(now())
+
+  payments Payment[]
+}
+
+model Payment {
+  id         String   @id @default(cuid())
+  contractId String
+  contract   Contract @relation(fields: [contractId], references: [id])
+  amountRs   Float
+  method     String? // upi | neft | cash
+  paidAt     DateTime @default(now())
+}
+
+// ─────────────────────────────────────────────────────────────
+// M07 — Traceability & Quality (FR-M7)
+// ─────────────────────────────────────────────────────────────
+
+// A farmer's plot-level delivery that was aggregated into this lot (FR-M7-05).
+// This is the join point the recall query walks: lot -> lotComponent -> plot ->
+// farmer/district. Lot split/merge lineage (FR-M7-04) is not implemented —
+// flagged in the module summary as a real simplification, not an oversight.
+model LotComponent {
+  id          String   @id @default(cuid())
+  lotId       String
+  lot         Lot      @relation(fields: [lotId], references: [id])
+  plotId      String
+  plot        Plot     @relation(fields: [plotId], references: [id])
+  quantityKg  Int
+  deliveredAt DateTime @default(now())
+}
+
+// Append-only, hash-chained custody log (FR-M7-02/03/11). Each event's hash
+// covers the previous event's hash plus this event's own payload, so altering
+// or deleting a historical row breaks the chain — detectable by walking it and
+// recomputing. A real distributed ledger is explicitly not needed for this
+// (per the FRS design note); a hash chain is what's needed and what's built.
+model CustodyEvent {
+  id            String   @id @default(cuid())
+  lotId         String
+  lot           Lot      @relation(fields: [lotId], references: [id])
+  eventType     String // delivery | aggregation | grading | storage | dispatch | gate_in
+  quantityInKg  Int      @default(0)
+  quantityOutKg Int      @default(0)
+  location      String?
+  actor         String? // free-text actor identity (grader name, transporter, etc.)
+  occurredAt    DateTime @default(now())
+  prevEventHash String?
+  eventHash     String
+}
+
+// ─────────────────────────────────────────────────────────────
+// M08 — Infrastructure & Logistics Registry (FR-M8)
+// ─────────────────────────────────────────────────────────────
+
+// One shared registry consumed by both the FPO and buyer surfaces (FR-M8-01) —
+// not duplicated per role. Straight-line distance only for freight estimates;
+// no routing-provider integration (Mappls/OSRM) at this tier.
+model Facility {
+  id                String   @id @default(cuid())
+  name              String
+  facilityType      String // collection_centre | warehouse | cold_storage | sorting_grading | assaying_lab | primary_processing
+  ownerName         String
+  operatorName      String
+  ownershipType     String // fpo_owned | private | cooperative | government | ppp
+  district          String
+  village           String?
+  lat               Float
+  lng               Float
+  capacityValue     Int
+  capacityUnit      String // tonnes | quintals | cu.m
+  commoditiesHandled String? // comma-separated crop codes
+  certifications    String? // comma-separated
+  tariffStructure   String?
+  contactPhone      String?
+  operatingHours    String?
+  verified          Boolean  @default(false) // FR-M8-02 verification workflow
+  declaredAt        DateTime @default(now()) // freshness stamp, FR-M4-31
+}
+
+model Transporter {
+  id               String  @id @default(cuid())
+  name             String
+  vehicleClasses   String // comma-separated: mini_truck, truck, tractor_trolley, refrigerated
+  serviceDistricts String // comma-separated districts
+  coldChainCapable Boolean @default(false)
+  ratePerKmRs      Float // simple rate card; versioning deferred at this tier
+  contactPhone     String?
+}
+
+// ─────────────────────────────────────────────────────────────
+// M09 — Knowledge, SOP & Training (FR-M9, FR-M4-45 to 54)
+// ─────────────────────────────────────────────────────────────
+
+// Single repository for farmer/FPO/buyer audiences (FR-M9-01), not three
+// separate ones. Seed data here is explicitly placeholder — see prisma/seed.ts
+// and the module summary: this platform stores and serves content authored by
+// qualified people, it does not generate agronomic recommendations itself.
+model SopContent {
+  id                 String    @id @default(cuid())
+  title              String
+  audience           String // farmer | fpo | buyer | all
+  category           String // agronomy | governance
+  cropCode           String?
+  operation          String? // sowing | irrigation | nutrient_management | plant_protection | harvesting | post_harvest | grading | storage | board_governance | statutory_filing | procurement_policy | quality_policy
+  season             String?
+  contentBody        String
+  sourceAttribution  String? // must be set before publish (FR-M9-03)
+  approvingAuthority String? // must be set before publish (FR-M9-02)
+  version            Int       @default(1)
+  status             String    @default("draft") // draft | technical_review | approved | published | expired
+  effectiveDate      DateTime?
+  expiryDate         DateTime?
+  changeLog          String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+}
+
+// ─────────────────────────────────────────────────────────────
+// M11 — Notification, Language & Accessibility (FR-M11)
+// ─────────────────────────────────────────────────────────────
+
+// Only the in-app channel actually delivers anything at this tier. WhatsApp,
+// SMS and IVR are represented as DeliveryAttempt rows marked "simulated" —
+// honest about what's real (no Meta/DLT/telephony integration exists here)
+// while still modelling the fallback-ordering and delivery-ledger shape the
+// FRS asks for. Bhashini ASR/translation/TTS (language service) is not
+// implemented at all — no voice interaction in this tier.
+model Notification {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  title       String
+  body        String
+  severe      Boolean  @default(false) // bypasses frequency cap and quiet hours
+  relatedUrl  String? // deep link into the app, e.g. /my-farm or /fpo/offers
+  status      String   @default("unread") // unread | read
+  createdAt   DateTime @default(now())
+  readAt      DateTime?
+
+  deliveryAttempts DeliveryAttempt[]
+}
+
+model DeliveryAttempt {
+  id             String       @id @default(cuid())
+  notificationId String
+  notification   Notification @relation(fields: [notificationId], references: [id])
+  channel        String // in_app | whatsapp | sms | ivr | email
+  status         String // sent | simulated_sent | deferred_quiet_hours | capped | failed
+  attemptedAt    DateTime     @default(now())
+}
+
+model NotificationPreference {
+  userId           String  @id
+  user             User    @relation(fields: [userId], references: [id])
+  preferredChannel String  @default("in_app") // in_app | whatsapp | sms | ivr | email
+  quietHoursStart  Int     @default(21) // 24h local hour
+  quietHoursEnd    Int     @default(6)
+  dailyCap         Int     @default(5) // non-severe notifications per rolling 24h
+}
+
+// ─────────────────────────────────────────────────────────────
+// M12 — Administration, Master Data & Audit (FR-M12)
+// ─────────────────────────────────────────────────────────────
+
+// Personal-data access/modification audit trail (FR-M12-03). Append-only in
+// practice — nothing in the app ever updates or deletes a row here. Hooked
+// into farmer-detail reads and financial actions (payments); not every read
+// path in the app writes one, which is flagged honestly in the module
+// summary rather than claimed as complete coverage.
+model AuditLog {
+  id           String   @id @default(cuid())
+  actorUserId  String?
+  actorRole    String?
+  action       String // read_farmer | record_payment | erasure_request | ...
+  purpose      String?
+  targetType   String // Farmer | Contract | Payment | ...
+  targetId     String
+  occurredAt   DateTime @default(now())
+}
+
+// FR-M12-04 — access, correction, erasure, portability requests. The
+// retention exception (FR-M12-04's "referenced by an executed contract"
+// case) is checked explicitly at processing time, not silently ignored.
+model DataSubjectRequest {
+  id            String    @id @default(cuid())
+  farmerId      String
+  farmer        Farmer    @relation(fields: [farmerId], references: [id])
+  requestType   String // access | erasure | portability
+  status        String    @default("pending") // pending | completed | blocked
+  blockedReason String?
+  requestedAt   DateTime  @default(now())
+  resolvedAt    DateTime?
+}
