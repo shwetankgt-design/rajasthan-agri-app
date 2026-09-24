@@ -13,3 +13,5 @@ scripts/auto-push.pid
 .agents/
 .claude/
 skills-lock.json
+
+.env*
