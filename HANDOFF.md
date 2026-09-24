@@ -70,6 +70,16 @@ Farmer registry, plots, crop cycles, rule-based advisory, FPO workbench, buyer m
 
 ---
 
+## 3b. Government decision-support analytics
+
+`src/lib/governmentAnalytics.ts` powers the analytical half of `/government` and the CSV export: headline KPIs, MSP price-realisation gap, irrigation/drought exposure, landholding & inclusion profile, market-linkage gap (volume with no buyer offer), storage adequacy, payment realisation per FPO, and contracted price vs mandi benchmark. All read-only, derived from existing models — no schema additions.
+
+**Landholding is derived from measured area** (`landholdingClass()`, standard GoI classes) rather than the stored `Farmer.landholdingCategory`, because the seed assigns that label at random and it contradicts the mapped area.
+
+**Two seed-data defects to fix before these panels are trustworthy on demo data:**
+- `prisma/seed.ts:502` — `actualYieldKg` is `areaHa × (600 + rand×400)`, a flat 600–1000 kg/ha for *every* crop regardless of `indicativeYieldKgHa`. Should be proportional to the crop's reference yield, e.g. `areaHa × indicativeYieldKgHa × (0.85 + rand×0.3)`. Until then, observed yield is ~800 kg/ha for all crops and any yield-calibration analysis is meaningless — which is why that panel is **not** on the page. `getYieldCalibration()` is implemented and ready to re-add once the seed is fixed.
+- `prisma/seed.ts:447` — `landholdingCategory: pick(LANDHOLDING_CATEGORIES)` is random and unrelated to plot area. Should be `landholdingClass(totalAreaHa)`.
+
 ## 4. Important: demo-label cleanup (do not regress this)
 
 The app was originally written with visible honesty disclaimers everywhere ("demo data", "not a live Agmarknet/IMD feed", model IDs like `RULE-EXPORT-PREMIUM-V1`, FRS spec codes like `FR-M8-06`, `[SAMPLE]` knowledge titles). **All user-visible instances were deliberately removed** for a leadership presentation. Don't reintroduce them into UI copy.
