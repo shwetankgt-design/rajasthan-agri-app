@@ -14,6 +14,8 @@ Verified against live data on 2026-09-22.
    ```
    Confirm http://localhost:3600/login loads.
 
+   > The app now runs against **Neon Postgres**, not the local SQLite file. Pages are slower than before (the government dashboard takes ~5 s) because each query crosses the network. **Open each page once before the audience arrives** so it is compiled and the Neon connection is warm — a cold first hit can take 20 s while Neon wakes from idle.
+
 2. **Open two browser windows** — this is important. Sessions are cookie-based per browser profile, so you cannot be logged in as two roles in one window:
    - **Window A (normal)** → you will use this as the **FPO**
    - **Window B (incognito)** → you will use this as the **Buyer**
